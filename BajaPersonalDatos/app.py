@@ -2,60 +2,11 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-def inferir_genero_por_nombre(nombre: str, diccionario: dict | None = None) -> str:
-    """
-    Intenta asignar un sexo (M/F) según el primer nombre.
-    Esto es solo una heurística simple, no es perfecto.
-    """
-    if not isinstance(nombre, str) or not nombre.strip():
-        return "N"  # No determinado
 
-    # Tomamos solo el primer nombre
-    primer_nombre = nombre.strip().split()[0].upper()
-
-    # 1) Si tenemos diccionario externo, lo usamos primero
-    if diccionario:
-        sexo_dic = diccionario.get(primer_nombre)
-        if isinstance(sexo_dic, str) and sexo_dic.strip():
-            return sexo_dic.strip().upper()
-
-    # Algunos nombres comunes definidos manualmente
-    nombres_f = {
-        "MARICIELO", "MARIA", "ANA", "LUISA", "KAREN", "SOFIA", "CARLA", "ROCIO",
-        "PATRICIA", "ELIZABETH", "JULIETA", "ANDREA", "CLAUDIA"
-    }
-    nombres_m = {
-        "JUAN", "CARLOS", "LUIS", "PEDRO", "JORGE", "MIGUEL", "JOSE", "ALBERTO",
-        "RICARDO", "ANDRES", "DIEGO", "OSCAR", "RAUL"
-    }
-
-    if primer_nombre in nombres_f:
-        return "F"
-    if primer_nombre in nombres_m:
-        return "M"
-
-    # Regla general muy simple: termina en A -> F, en otro caso -> M
-    if primer_nombre.endswith("A"):
-        return "F"
-    return "M"
-
-def procesar_archivos(archivo_global, archivo_filtro, archivo_diccionario=None):
+def procesar_archivos(archivo_global, archivo_filtro):
     # Leer Excels
     df_global = pd.read_excel(archivo_global, dtype=str)
     df_filtro = pd.read_excel(archivo_filtro, dtype=str)
-
-    # Cargar diccionario de nombres si se proporcionó
-    diccionario_nombres = {}
-    if archivo_diccionario is not None:
-        df_dic = pd.read_excel(archivo_diccionario, dtype=str)
-        if "NOMBRE" not in df_dic.columns or "SEXO" not in df_dic.columns:
-            raise ValueError(
-                "El diccionario debe tener las columnas 'NOMBRE' y 'SEXO'. "
-                f"Columnas encontradas: {list(df_dic.columns)}"
-            )
-        df_dic["NOMBRE"] = df_dic["NOMBRE"].astype(str).str.strip().str.upper()
-        df_dic["SEXO"] = df_dic["SEXO"].astype(str).str.strip().str.upper()
-        diccionario_nombres = dict(zip(df_dic["NOMBRE"], df_dic["SEXO"]))
 
     col_global = "NRO. DOCUMENTO"
     col_filtro = "DNI"
@@ -90,21 +41,6 @@ def procesar_archivos(archivo_global, archivo_filtro, archivo_diccionario=None):
 
     # Encontrados: nos quedamos solo con registros que hacen match
     df_encontrados = df_merge[df_merge["_merge"] == "both"].copy()
-
-    # Intentar detectar automáticamente la columna de nombre
-    # Buscamos la primera columna que contenga "NOMBRE" o "NOMBRES"
-    col_nombre = None
-    for col in df_encontrados.columns:
-        col_mayus = str(col).upper()
-        if "NOMBRE" in col_mayus:
-            col_nombre = col
-            break
-
-    # Si encontramos una columna de nombre, calculamos sexo inferido
-    if col_nombre is not None:
-        df_encontrados["SEXO_INFERIDO"] = df_encontrados[col_nombre].apply(
-            lambda x: inferir_genero_por_nombre(x, diccionario_nombres)
-        )
 
     # Eliminamos columnas auxiliares para que la data quede "limpia"
     df_encontrados = df_encontrados.drop(columns=["_merge", "DNI_MERGE"])
@@ -151,17 +87,12 @@ def run_app():
         type=["xlsx"],
         key="filtro",
     )
-    archivo_diccionario = st.file_uploader(
-        "Opcional: sube un Excel de DICCIONARIO DE NOMBRES (columnas 'NOMBRE' y 'SEXO')",
-        type=["xlsx"],
-        key="diccionario",
-    )
 
     if archivo_global is not None and archivo_filtro is not None:
         if st.button("Procesar archivos"):
             try:
                 df_encontrados, df_no_encontrados = procesar_archivos(
-                    archivo_global, archivo_filtro, archivo_diccionario
+                    archivo_global, archivo_filtro
                 )
 
                 st.success("Procesamiento completado.")
