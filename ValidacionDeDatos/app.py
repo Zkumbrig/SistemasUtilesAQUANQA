@@ -34,10 +34,24 @@ CONFIG_STATE_KEY = "vd_last_config"
 HIDDEN_STATE_KEY = "vd_hidden_neutral_rows"
 
 
-@st.cache_data
-def load_excel(file):
+def get_excel_sheet_names(file) -> list[str]:
+    """Devuelve los nombres de las hojas del Excel. Reinicia el stream para no consumirlo."""
     try:
-        return pd.read_excel(file, engine="openpyxl")
+        if hasattr(file, "seek"):
+            file.seek(0)
+        xl = pd.ExcelFile(file, engine="openpyxl")
+        return xl.sheet_names
+    except Exception:
+        return []
+
+
+@st.cache_data
+def load_excel(file, sheet_name=0):
+    """Carga el Excel. sheet_name puede ser el nombre de la hoja (ej. 'main') o el índice (0 = primera)."""
+    try:
+        if hasattr(file, "seek"):
+            file.seek(0)
+        return pd.read_excel(file, sheet_name=sheet_name, engine="openpyxl")
     except Exception as exc:
         st.error(f"Error al cargar el archivo: {exc}")
         return None
@@ -492,7 +506,26 @@ def run_app():
         _render_instructions()
         return
 
-    df = load_excel(uploaded_file)
+    sheet_names = get_excel_sheet_names(uploaded_file)
+    if not sheet_names:
+        st.error("No se pudieron leer las hojas del Excel.")
+        return
+
+    # Por defecto usar la hoja "main" si existe; si no, la primera
+    default_sheet = "main" if "main" in sheet_names else sheet_names[0]
+    sheet_index = sheet_names.index(default_sheet) if default_sheet in sheet_names else 0
+
+    if len(sheet_names) > 1:
+        selected_sheet = st.selectbox(
+            "Hoja del Excel a validar",
+            options=sheet_names,
+            index=sheet_index,
+            help="Si tus datos estan en la hoja 'main', seleccionala para cargar todos los cambios.",
+        )
+    else:
+        selected_sheet = sheet_names[0]
+
+    df = load_excel(uploaded_file, sheet_name=selected_sheet)
     if df is None:
         return
     if df.empty:
