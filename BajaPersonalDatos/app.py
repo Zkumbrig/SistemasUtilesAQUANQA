@@ -1,9 +1,40 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+from datetime import date
 
 
-def procesar_archivos(archivo_global, archivo_filtro):
+def _normalizar_fecha(series: pd.Series) -> pd.Series:
+    dt = pd.to_datetime(series, errors="coerce", dayfirst=True)
+    normalized = dt.dt.strftime("%Y-%m-%d")
+    invalid_mask = normalized.isna() | (normalized == "NaT")
+    if invalid_mask.any():
+        normalized.loc[invalid_mask] = series.loc[invalid_mask].astype(str).str.strip().str[:10]
+    return normalized.fillna("").replace({"NaT": "", "nan": "", "None": ""})
+
+
+def _filtrar_por_rango_fecha(df: pd.DataFrame, fecha_col: str | None, fecha_inicio: date | None, fecha_fin: date | None) -> pd.DataFrame:
+    if not fecha_col or fecha_col not in df.columns:
+        return df
+    if not fecha_inicio or not fecha_fin:
+        return df
+
+    fechas_norm = _normalizar_fecha(df[fecha_col])
+    fechas_dt = pd.to_datetime(fechas_norm, errors="coerce")
+    inicio = pd.Timestamp(fecha_inicio)
+    fin = pd.Timestamp(fecha_fin)
+    mask = fechas_dt.notna() & (fechas_dt >= inicio) & (fechas_dt <= fin)
+    return df[mask].copy()
+
+
+def procesar_archivos(
+    archivo_global,
+    archivo_filtro,
+    fecha_global_col=None,
+    fecha_filtro_col=None,
+    fecha_inicio: date | None = None,
+    fecha_fin: date | None = None,
+):
     # Leer Excels
     df_global = pd.read_excel(archivo_global, dtype=str)
     df_filtro = pd.read_excel(archivo_filtro, dtype=str)
@@ -22,10 +53,24 @@ def procesar_archivos(archivo_global, archivo_filtro):
             f"En el archivo de DNIs no se encontró la columna '{col_filtro}'. "
             f"Columnas disponibles: {list(df_filtro.columns)}"
         )
+    if fecha_global_col and fecha_global_col not in df_global.columns:
+        raise ValueError(
+            f"En la DATA GLOBAL no se encontró la columna de fecha '{fecha_global_col}'. "
+            f"Columnas disponibles: {list(df_global.columns)}"
+        )
+    if fecha_filtro_col and fecha_filtro_col not in df_filtro.columns:
+        raise ValueError(
+            f"En el archivo de filtro no se encontró la columna de fecha '{fecha_filtro_col}'. "
+            f"Columnas disponibles: {list(df_filtro.columns)}"
+        )
 
     # Normalizar
     df_global[col_global] = df_global[col_global].astype(str).str.strip()
     df_filtro[col_filtro] = df_filtro[col_filtro].astype(str).str.strip()
+
+    # Filtrar por rango de fechas (si se configuró en cada archivo)
+    df_global = _filtrar_por_rango_fecha(df_global, fecha_global_col, fecha_inicio, fecha_fin)
+    df_filtro = _filtrar_por_rango_fecha(df_filtro, fecha_filtro_col, fecha_inicio, fecha_fin)
 
     # Columna común para merge
     df_global["DNI_MERGE"] = df_global[col_global]
@@ -43,7 +88,8 @@ def procesar_archivos(archivo_global, archivo_filtro):
     df_encontrados = df_merge[df_merge["_merge"] == "both"].copy()
 
     # Eliminamos columnas auxiliares para que la data quede "limpia"
-    df_encontrados = df_encontrados.drop(columns=["_merge", "DNI_MERGE"])
+    cols_aux = ["_merge", "DNI_MERGE"]
+    df_encontrados = df_encontrados.drop(columns=cols_aux, errors="ignore")
 
     # No encontrados
     df_no_encontrados = (
@@ -51,7 +97,7 @@ def procesar_archivos(archivo_global, archivo_filtro):
         .drop_duplicates()
         .rename(columns={"DNI_MERGE": col_filtro})
     )
-    df_no_encontrados["MENSAJE"] = "DNI no se encontró en la data global"
+    df_no_encontrados["MENSAJE"] = "DNI no se encontró en la data global filtrada"
 
     return df_encontrados, df_no_encontrados
 
@@ -72,6 +118,7 @@ def run_app():
     El sistema comparará:
     - Columna `NRO. DOCUMENTO` en la data global
     - Columna `DNI` en la data reducida
+    - Opcionalmente, filtrará ambos archivos por un rango de fechas
     y generará archivos para descargar con los resultados.
     """
     )
@@ -89,10 +136,54 @@ def run_app():
     )
 
     if archivo_global is not None and archivo_filtro is not None:
+        df_global_preview = pd.read_excel(archivo_global, nrows=0)
+        archivo_global.seek(0)
+        df_filtro_preview = pd.read_excel(archivo_filtro, nrows=0)
+        archivo_filtro.seek(0)
+
+        fecha_global_options = ["(No filtrar por fecha)"] + list(df_global_preview.columns)
+        fecha_filtro_options = ["(No filtrar por fecha)"] + list(df_filtro_preview.columns)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            fecha_global_sel = st.selectbox(
+                "Columna de fecha en DATA GLOBAL (opcional)",
+                options=fecha_global_options,
+                index=0,
+            )
+        with c2:
+            fecha_filtro_sel = st.selectbox(
+                "Columna de fecha en archivo de DNIs (opcional)",
+                options=fecha_filtro_options,
+                index=0,
+            )
+
+        fecha_global_col = None if fecha_global_sel == "(No filtrar por fecha)" else fecha_global_sel
+        fecha_filtro_col = None if fecha_filtro_sel == "(No filtrar por fecha)" else fecha_filtro_sel
+
+        st.markdown("### Rango de fecha para filtrar")
+        hoy = date.today()
+        r1, r2 = st.columns(2)
+        with r1:
+            fecha_inicio = st.date_input("Desde", value=hoy)
+        with r2:
+            fecha_fin = st.date_input("Hasta", value=hoy)
+
+        if fecha_inicio > fecha_fin:
+            st.warning("La fecha inicial no puede ser mayor que la fecha final.")
+
         if st.button("Procesar archivos"):
             try:
+                if fecha_inicio > fecha_fin:
+                    raise ValueError("La fecha inicial no puede ser mayor que la fecha final.")
+
                 df_encontrados, df_no_encontrados = procesar_archivos(
-                    archivo_global, archivo_filtro
+                    archivo_global,
+                    archivo_filtro,
+                    fecha_global_col=fecha_global_col,
+                    fecha_filtro_col=fecha_filtro_col,
+                    fecha_inicio=fecha_inicio,
+                    fecha_fin=fecha_fin,
                 )
 
                 st.success("Procesamiento completado.")
